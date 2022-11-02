@@ -1,136 +1,76 @@
-/*
-Copyright 2011. All rights reserved.
-Institute of Measurement and Control Systems
-Karlsruhe Institute of Technology, Germany
-
-This file is part of libelas.
-Authors: Andreas Geiger
-
-libelas is free software; you can redistribute it and/or modify it under the
-terms of the GNU General Public License as published by the Free Software
-Foundation; either version 3 of the License, or any later version.
-
-libelas is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE. See the GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along with
-libelas; if not, write to the Free Software Foundation, Inc., 51 Franklin
-Street, Fifth Floor, Boston, MA 02110-1301, USA 
-*/
-
-// Demo program showing how libelas can be used, try "./elas -h" for help
 
 #include <iostream>
+#include <time.h>
 #include "elas.h"
 #include "image.h"
+#include <opencv2/opencv.hpp>
 
 using namespace std;
+using namespace cv;
 
-// compute disparities of pgm image input pair file_1, file_2
-void process (const char* file_1,const char* file_2) {
+int main(int argc, char** argv)
+{
+  /*
+  *左右视图的路径
+  */
+	string path1 = "--left image path";
+	string path2 = "--rigth image path";
 
-  cout << "Processing: " << file_1 << ", " << file_2 << endl;
+	//读取左右视图  
+	Mat left = imread(path1, -1);
+	Mat right = imread(path2, -1);
 
-  // load images
-  image<uchar> *I1,*I2;
-  I1 = loadPGM(file_1);
-  I2 = loadPGM(file_2);
+	if (left.size != right.size) {
+		cerr << "左右视图必须拥有相同的尺寸" << endl;
+		return -1;
+	}
 
-  // check for correct size
-  if (I1->width()<=0 || I1->height() <=0 || I2->width()<=0 || I2->height() <=0 ||
-      I1->width()!=I2->width() || I1->height()!=I2->height()) {
-    cout << "ERROR: Images must be of same size, but" << endl;
-    cout << "       I1: " << I1->width() <<  " x " << I1->height() << 
-                 ", I2: " << I2->width() <<  " x " << I2->height() << endl;
-    delete I1;
-    delete I2;
-    return;    
-  }
+	if (left.channels() == 3)
+		cvtColor(left, left, COLOR_RGB2GRAY);
+	if (right.channels() == 3)
+		cvtColor(right, right, COLOR_RGB2GRAY);
 
-  // get image width and height
-  int32_t width  = I1->width();
-  int32_t height = I1->height();
+	int width = left.cols;
+	int height = left.rows;
+	int dim[3] = { width, height, width };
 
-  // allocate memory for disparity images
-  const int32_t dims[3] = {width,height,width}; // bytes per line = width
-  float* D1_data = (float*)malloc(width*height*sizeof(float));
-  float* D2_data = (float*)malloc(width*height*sizeof(float));
+	Mat disp_left = Mat::zeros(Size(width, height), CV_32FC1);
+	Mat disp_right = Mat::zeros(Size(width, height), CV_32FC1);
 
-  // process
-  Elas::parameters param;
-  param.postprocess_only_left = false;
-  Elas elas(param);
-  elas.process(I1->data,I2->data,D1_data,D2_data,dims);
+	// 参数设置	
+	Elas::parameters param;
+	param.disp_min = 0;                                     // 最小视差	
+	param.disp_max = 256;                                // 最大视差 最好设置一下啊
+	param.support_threshold = 0.85;              // 比率测试：最低match VS 次低match
+	param.support_texture = 10;                     // 支持点的最小纹理
+	param.candidate_stepsize = 5;                  // 用于支持点的sobel特征匹配的邻域半径
+	param.incon_window_size = 5;                  // 不连续性窗口的尺寸
+	param.incon_threshold = 5;                       // 不连续性窗口内的视差范围阈值
+	param.incon_min_support = 5;                 // 不连续性窗口内的最低支持点数量
+	param.add_corners = true;                        // 是否添加角点
+	param.grid_size = 20;                                  // 网格尺寸
+	param.beta = 0.02;                                      // 图像相似性度量的参数
+	param.gamma = 3;                                      // 先验概率常数
+	param.sigma = 1;                                         // 先验概率的标准差
+	param.sradius = 3;                                       // 标准差半径
+	param.match_texture = 1;                         // 最低纹理
+	param.lr_threshold = 1;                             // 左右一致性检验阈值
+	param.speckle_sim_threshold = 1;          // 连通域判断阈值
+	param.speckle_size = 200;                        // 连通域噪声尺寸判断阈值
+	param.ipol_gap_width = 3;                       // 空洞宽
+	param.filter_median = false;                     // 是否中值滤波
+	param.filter_adaptive_mean = true;        // 是否自适应中值滤波
+	param.postprocess_only_left = true;     // 是否只对左视差图后处理，设置为True可以节省时间
+	param.subsampling = false;                     // 每个两个像素进行视差计算，设置为True可以节省时间，但是传入的D1和D2的分辨率必须为(w/2) x (h/2)
 
-  // find maximum disparity for scaling output disparity images to [0..255]
-  float disp_max = 0;
-  for (int32_t i=0; i<width*height; i++) {
-    if (D1_data[i]>disp_max) disp_max = D1_data[i];
-    if (D2_data[i]>disp_max) disp_max = D2_data[i];
-  }
+	clock_t start = clock();
+	Elas elas(param);
+	elas.process(left.data, right.data, disp_left.ptr<float>(0), disp_right.ptr<float>(0), dim);
+	clock_t end = clock();
+	cout << "running time：" << (double)(1000 * (end - start) / CLOCKS_PER_SEC) << endl;
+  //输出视差图
+	disp_left.convertTo(disp_left, CV_8U);
+	cv::imshow("picure", disp_left);
+	cv::waitKey(0);
 
-  // copy float to uchar
-  image<uchar> *D1 = new image<uchar>(width,height);
-  image<uchar> *D2 = new image<uchar>(width,height);
-  for (int32_t i=0; i<width*height; i++) {
-    D1->data[i] = (uint8_t)max(255.0*D1_data[i]/disp_max,0.0);
-    D2->data[i] = (uint8_t)max(255.0*D2_data[i]/disp_max,0.0);
-  }
-
-  // save disparity images
-  char output_1[1024];
-  char output_2[1024];
-  strncpy(output_1,file_1,strlen(file_1)-4);
-  strncpy(output_2,file_2,strlen(file_2)-4);
-  output_1[strlen(file_1)-4] = '\0';
-  output_2[strlen(file_2)-4] = '\0';
-  strcat(output_1,"_disp.pgm");
-  strcat(output_2,"_disp.pgm");
-  savePGM(D1,output_1);
-  savePGM(D2,output_2);
-
-  // free memory
-  delete I1;
-  delete I2;
-  delete D1;
-  delete D2;
-  free(D1_data);
-  free(D2_data);
 }
-
-int main (int argc, char** argv) {
-
-  // run demo
-  if (argc==2 && !strcmp(argv[1],"demo")) {
-    process("img/cones_left.pgm",   "img/cones_right.pgm");
-    process("img/aloe_left.pgm",    "img/aloe_right.pgm");
-    process("img/raindeer_left.pgm","img/raindeer_right.pgm");
-    process("img/urban1_left.pgm",  "img/urban1_right.pgm");
-    process("img/urban2_left.pgm",  "img/urban2_right.pgm");
-    process("img/urban3_left.pgm",  "img/urban3_right.pgm");
-    process("img/urban4_left.pgm",  "img/urban4_right.pgm");
-    cout << "... done!" << endl;
-
-  // compute disparity from input pair
-  } else if (argc==3) {
-    process(argv[1],argv[2]);
-    cout << "... done!" << endl;
-
-  // display help
-  } else {
-    cout << endl;
-    cout << "ELAS demo program usage: " << endl;
-    cout << "./elas demo ................ process all test images (image dir)" << endl;
-    cout << "./elas left.pgm right.pgm .. process a single stereo pair" << endl;
-    cout << "./elas -h .................. shows this help" << endl;
-    cout << endl;
-    cout << "Note: All images must be pgm greylevel images. All output" << endl;
-    cout << "      disparities will be scaled such that disp_max = 255." << endl;
-    cout << endl;
-  }
-
-  return 0;
-}
-
-
